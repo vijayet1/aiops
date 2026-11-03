@@ -18,15 +18,135 @@ The architecture is divided into two primary components:
 
 2. **`azure-ai-diagnostic-agent`**: Standalone investigation assistant for telemetry and configuration querying.
 
+### Component Overview
+
 ```mermaid
-graph LR
-    Operator -->|React UI| Dashboard[aiops-dashboard]
-    Dashboard -->|API Gateway| Agent[azure-ai-diagnostic-agent]
-    Dashboard -->|Ticket Handoff| ITSM[ServiceNow]
-    Agent -->|Read-only queries via application identity| Azure[Azure Log Analytics / Microsoft Graph / ARM]
+flowchart LR
+    Operator[Operator]
+    Events[Infrastructure and backup failure feed]
+    subgraph Dashboard[aiops-dashboard]
+        UI[React UI]
+        Gateway[API gateway]
+        Feedback[Feedback and resolution backend]
+        Preview[Browser-memory automation preview]
+    end
+    Agent[azure-ai-diagnostic-agent]
+    ITSM[ServiceNow / ITSM]
+    Change[External change agent / services]
+    Foundry[Azure AI Foundry]
+    Azure[Azure Log Analytics / Microsoft Graph / ARM]
+
+    Operator -->|Use console| UI
+    Events -->|Failure events via SSE| UI
+    Events -->|Incoming failures for reconciliation| Feedback
+    UI -->|Analysis, feedback, and ticket requests| Gateway
+    Gateway -->|Record identity-backed confirmations| Feedback
+    Gateway <-->|Investigation requests and results| Agent
+    Gateway <-->|Retrieve tickets| ITSM
+    UI -->|Operator opens with ticket reference| Change
+    Gateway -->|Forward operator token for authorization| Change
+    UI -->|Simulated steps only| Preview
+    Operator <-->|Standalone investigation requests and results| Agent
+    Agent <-->|Query generation and correction context| Foundry
+    Agent <-->|Read-only requests and evidence via application identity| Azure
 ```
 
-The component names below are architectural identifiers, not directories in this repository. ServiceNow and the Azure APIs are external integrations.
+The component names are architectural identifiers, not directories in this repository. The overview shows logical responsibilities, not a deployment topology. The failure feed's implementation and the external change service are not specified here. ServiceNow supplies ticket data; it is not the destination of the change-agent handoff. The browser-memory preview has no infrastructure execution path.
+
+### Investigation Flow
+
+```mermaid
+sequenceDiagram
+    actor Operator
+    participant Dashboard as Dashboard UI / gateway
+    participant Agent as Diagnostic agent backend
+    participant Foundry as Azure AI Foundry
+    participant Azure as Azure read APIs
+
+    alt Investigation from the console
+        Operator->>Dashboard: Request analysis for an event
+        Dashboard->>Agent: Forward investigation request
+    else Standalone investigation
+        Operator->>Agent: Submit operational question
+    end
+    Agent->>Foundry: Question and Markdown skill schemas
+    Foundry-->>Agent: Generated query
+    Agent->>Agent: Validate query and execution restrictions
+    Agent->>Azure: Execute read-only request using application identity
+    Azure-->>Agent: Evidence or query error
+    opt Query failure requiring correction
+        Note over Agent,Foundry: At most two correction retries
+        Agent->>Foundry: Query error and correction context
+        Foundry-->>Agent: Corrected query
+        Agent->>Agent: Revalidate corrected query
+        Agent->>Azure: Retry read-only request
+        Azure-->>Agent: Evidence or query error
+    end
+    opt Cross-source refinement
+        Note over Agent,Azure: Up to three additional query steps, subject to the same guardrails
+        Agent->>Foundry: Result previews and required dependencies
+        Foundry-->>Agent: Follow-up query
+        Agent->>Agent: Validate follow-up query
+        Agent->>Azure: Execute read-only follow-up
+        Azure-->>Agent: Additional evidence
+    end
+    Agent->>Agent: Correlate evidence and apply required identity filtering
+    Note over Agent: Suppress unverified results if required filtering fails
+    alt Console request
+        Agent-->>Dashboard: Structured results or failure
+        Dashboard-->>Operator: Display investigation outcome
+    else Standalone request
+        Agent-->>Operator: Structured results or failure
+    end
+```
+
+The correction and refinement blocks summarize bounded behavior; they do not imply unlimited retries. Query generation does not grant the model direct Azure access, and investigation results do not trigger a change.
+
+### Ticket-Based Change Flow
+
+```mermaid
+sequenceDiagram
+    actor Operator
+    participant UI as Dashboard UI
+    participant Gateway as Dashboard gateway
+    participant ITSM as ServiceNow / ITSM
+    participant Change as External change agent / services
+
+    Operator->>UI: Request ITSM tickets
+    UI->>Gateway: Retrieve tickets
+    Gateway->>ITSM: Request ticket data
+    ITSM-->>Gateway: Tickets and requested changes
+    Gateway-->>UI: Display ticket details
+    Operator->>UI: Open change agent for selected ticket
+    UI->>Change: Open with ticket reference prefilled
+    Gateway->>Change: Forward operator token for downstream validation
+    Change->>Change: Validate token and authorize requested operation
+    Note over Operator,Change: Human approval is required before state changes
+    Note over Change: External services own mutation and verification
+```
+
+The token-forwarding interaction is a logical authorization boundary; the exact launch protocol, approval mechanism, mutation target, and verification API are not specified here. The diagnostic agent is not the change executor.
+
+### Asynchronous Access Inventory Flow
+
+```mermaid
+sequenceDiagram
+    participant Client as Requesting client
+    participant Agent as Diagnostic agent backend
+    participant Job as Deterministic Python inventory job
+    participant Azure as Azure subscription and identity APIs
+
+    Client->>Agent: Request tenant-wide RBAC inventory
+    Agent->>Job: Start background inventory
+    Agent-->>Client: Polling ID
+    Job->>Azure: Read subscription RBAC and application identities
+    Azure-->>Job: Inventory evidence
+    Job->>Agent: Make job status and results available
+    Client->>Agent: Poll using ID
+    Agent-->>Client: Current status or completed inventory
+```
+
+This path bypasses the LLM. Job state is process-local as described below; durable recovery and cross-instance polling are not defined.
 
 ## Component 1: Operations Console (`aiops-dashboard`)
 
@@ -74,11 +194,11 @@ An investigation assistant that translates natural-language queries into executa
 
   * **Flow:** If a generated KQL or Graph query fails execution, the backend feeds the error back to the model as correction context.
 
-  * **Guardrails:** Correction routines are hard-capped at **two retries** to prevent infinite loops.
+  * **Described limit:** Correction routines allow at most **two retries**. This limit must be verified against the component implementation.
 
 * **Correlate Sources and Refine Results**
 
-  * **Flow:** The agent executes an initial query and feeds result previews back to the model. Cross-source dependencies trigger up to three additional query steps.
+  * **Flow:** The agent executes an initial query and feeds result previews back to the model. Cross-source dependencies can trigger up to **three additional query steps** in the described workflow. Follow-up queries remain subject to the same execution guardrails.
 
   * **Outcome:** Merges evidence across multiple infrastructure domains. The backend suppresses unverified results if required identity filtering fails.
 
