@@ -4,11 +4,7 @@
 
 This repository contains architecture and workflow documentation for an AIOps platform that integrates large language models (LLMs) into infrastructure investigation. The described architecture separates AI-assisted investigation from state-changing workflows and requires human approval before changes.
 
-## Repository Status
-
-Only this README is tracked in this repository. Component source code, deployment configuration, dependency manifests, and automated tests are not included. There is no application to install or run from this repository.
-
-The workflows below describe the platform's intended behavior, not implementation verified here. Authentication behavior, query restrictions, retry limits, and integration availability must be checked against the component implementations before operational use. The automation preview is described as simulated rather than infrastructure execution.
+This repository documents the platform architecture and workflows; component implementation and deployment instructions are outside its scope.
 
 ## Architecture Overview
 
